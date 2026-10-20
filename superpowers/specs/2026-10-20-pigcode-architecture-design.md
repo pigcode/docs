@@ -24,6 +24,7 @@ v1.0 的产品边界：
 技术路线：
 
 - 使用开源 [Cordis](https://github.com/cordiverse/cordis) 作为插件容器，不重新实现插件框架。
+- UI 外壳与组件以 pigclaude 为迁移基线；账号、会员、代理等 pigclaude 专属页面不迁移。
 - TypeScript 全家桶：Electron 壳 + Local Host（Node 进程）+ 共享 React 客户端。
 - Host 与 Renderer 各自运行一棵 Cordis 插件树，通过版本化 RPC 通信。
 - SQLite 保存只追加事件日志与投影；Git 隐藏 ref 保存 checkpoint。
@@ -74,6 +75,7 @@ v1.0 的产品边界：
 | 数据模型 | SQLite 事件日志 + 投影 | 回放、重连、审计、多端一致 |
 | 插件信任 | Host 内受信 + UI 受限 facade | 与 dsh 一致，v1 成本可控 |
 | 仓库 | `frontend` 作为产品 monorepo | 单一 lockfile、单一发布单元、协议与客户端同步演进 |
+| UI 基线 | pigclaude 外壳与组件 | 已有高质量桌面 UI，节省视觉与交互成本 |
 | v1.0 范围 | M0–M5 全部 | 产品负责人明确要求 |
 
 ---
@@ -104,6 +106,8 @@ v1.0 包含以下全部能力，对应里程碑 M0–M5：
 - 生态集成：MCP bridge、PR/代码托管、浏览器预览、定时任务。
 - 插件平台：provider/UI/capability 插件安装、启用、停用、版本兼容、权限声明、插件列表。
 - 三平台：macOS、Windows、Linux。
+
+pigclaude 的 UI 外壳与组件作为迁移基线；其账号、会员、代理和 Claude 账号池页面不属于 Pigcode v1.0 的核心功能。
 
 ### 3.3 核心用户旅程
 
@@ -558,7 +562,7 @@ session.stopped
   - 先加载客户端 kernel（connection、store、slots、renderer）。
   - 按 boot graph 顺序惰性 `import()` 每个 client entry。
   - 每个 entry 是一个 Cordis 插件；激活时注册 slot/命令，停用时通过 effect 清理。
-- React 作为共享 external，所有插件共用同一份 React。
+- React 19 作为共享 external，所有插件共用同一份 React；插件不得自带 React。
 - CSS 以 revision 隔离；卸载时移除对应 style 标签。
 - 生产环境关闭 HMR；开发环境通过 revision URL 重载单个插件。
 
@@ -904,7 +908,41 @@ command_receipts(command_id PRIMARY KEY, result_json, created_at)
 - 从第一天提供 locale 服务与消息目录；v1.0 支持 `zh-CN` 与 `en-US`。
 - 用户消息、agent 输出、文件名不翻译。
 - 主题：浅色/深色/跟随系统；插件通过 theme token 取色，不硬编码颜色。
-- 视觉方向：React + Tailwind + Radix/shadcn 风格的高密度开发工具；具体视觉稿另开设计任务。
+- 视觉方向：React 19 + Tailwind 4 + Radix/shadcn 风格的高密度开发工具；具体视觉稿另开设计任务。
+
+### 11.5 复用 pigclaude UI 基线
+
+Pigcode 的 UI 外壳与组件以 `pigclaude/frontend` 为起点，而不是从零设计。基线：
+
+- pigclaude 聚合仓库：`944f6f9edb5efa5c525d9b884e9aeca72b37ae10`
+- pigclaude frontend：`e9582dd766d550f266dc792efa0961543584d94a`
+- 技术栈：Electron 43 / electron-vite 5 / React 19.2 / Tailwind 4 / Radix / shadcn 风格组件 / TipTap
+- 已有能力：macOS 隐藏标题栏 + 交通灯 + 磨砂、Windows mica + titleBarOverlay、浅/深色与自定义主题、侧栏/设置侧栏、聊天时间线、工具卡片、审批卡片、composer、命令面板、视觉回归基线
+
+复用边界：
+
+| 部分 | 处理 | 说明 |
+|---|---|---|
+| `@pigclaude/web-ui` 组件、tokens、主题 | 直接迁移 | 重命名为 `@pigcode/ui-primitives`，保留 token 与组件 API |
+| Electron 窗口外壳、交通灯、Windows 标题栏、托盘 | 迁移并适配 | 去掉 `sandbox: false`；原生能力改由 preload + Host RPC 承担 |
+| 侧栏、设置侧栏、聊天页布局、composer、审批/工具卡片 | 迁移并重构 | 去掉 fixture 和硬编码标题；改为 props/store 驱动 |
+| 主题/外观设置、视觉回归 harness | 直接迁移 | 插件主题 API 映射到同一套 tokens |
+| 登录、会员、OAuth、设备授权 | 不迁移 | Pigcode v1.0 无账号体系 |
+| Claude 账号池、代理、用量、环境页 | 不迁移到核心 | 未来作为 provider/capability 插件实现 |
+| Electron main 的授权/daemon/local-store/switcher/session-env | 不迁移 | 由 Pigcode Host 取代 |
+| Rust backend | 不迁移 | 与 v1.0 本地架构无关 |
+
+迁移方式：
+
+- 一次性复制到 `pigcode/frontend`，保留来源 commit 与 NOTICE；不在运行时跨仓库依赖 pigclaude。
+- 包名 `@pigclaude/*` → `@pigcode/*`；组件 API 尽量保持，减少视觉回归。
+- 先迁移纯展示层，再替换数据源；禁止把 fixture 带入生产路径。
+- `Screen` 联合类型与硬编码路由替换为 view registry + slot；核心视图（chat、settings、plugin manager、onboarding）由内置 UI 插件注册。
+- 把所有可见文案迁移到 locale 目录；v1.0 同时提供 zh-CN 与 en-US。
+- React 19 作为共享 external；UI 插件不得自带 React；`@pigcode/plugin-sdk` 导出统一的 UI primitives 与 hooks。
+- 视觉回归：沿用 pigclaude 的 Playwright 截图基线，迁移后先做“无视觉变化”验收，再做数据接线。
+
+这个基线的价值是节省大量视觉与交互打磨；风险是它目前是 fixture 驱动、且带有 Claude 单产品假设。迁移时必须把“展示层”和“产品状态”彻底切开。
 
 ---
 
@@ -930,8 +968,8 @@ frontend/
     contracts/               # Zod 协议、领域类型、版本
     plugin-sdk/              # Host/Client 插件 API、manifest 类型
     client-runtime/          # connection、store、slots、renderer
-    ui-primitives/           # 设计系统原语
-    ui-shell/                # 应用外壳
+    ui-primitives/           # 设计系统原语（由 @pigclaude/web-ui 迁移）
+    ui-shell/                # 应用外壳（由 pigclaude desktop renderer 迁移）
     ui-chat/                 # 时间线、消息、工具卡片、审批
     ui-composer/             # 输入框、上下文 chip、附件
     ui-diff/                 # diff 视图
@@ -977,8 +1015,9 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 - monorepo、Cordis vendor/pin、contracts、plugin-sdk 骨架。
 - Host：kernel、settings、storage、rpc、projects、threads、sessions。
 - Electron 壳：启动 Host、认证、窗口。
+- 迁移 pigclaude UI 外壳与组件：`ui-primitives`、`ui-shell`、`ui-chat`、`ui-composer`、`ui-settings`；清除 fixture 与 Claude 专属路由。
 - fake provider：用于验证协议与 UI，不依赖真实 CLI。
-- 最小聊天 UI、插件列表。
+- 用 Pigcode store 驱动聊天页与插件列表；核心视图通过 view registry 注册。
 - 一个样例 UI 插件、一个样例 capability 插件。
 
 验收：
@@ -986,6 +1025,8 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 - 应用在三平台开发环境启动。
 - Host 崩溃后自动重启，Renderer 从 cursor 重连。
 - 创建项目/会话，fake provider 流式输出。
+- 迁移后的 UI 在浅色/深色/玻璃/窄窗口下通过视觉回归基线；没有可见的 Claude 账号/会员/代理入口。
+- 聊天页、侧栏、设置页由 store/registry 驱动，不再读取 fixture。
 - 安装/启用/停用样例插件；UI slot 和 Host capability 都生效并能干净移除。
 - `pigcode --dump-config` 输出完整配置树。
 
@@ -995,7 +1036,7 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 
 - Claude Code adapter。
 - 事件日志与投影、待审批/待答问题持久化。
-- 聊天 UI、工具卡片、审批、问题、计划、中断/继续。
+- 将真实 Claude 会话接入迁移后的聊天页、composer、工具卡片和审批组件。
 - 项目选择、权限模式。
 - Host 崩溃恢复与 provider 进程清理。
 
@@ -1006,6 +1047,7 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 - 重启应用后恢复会话与历史；未完成的审批标记为 orphaned 并可重新发起。
 - Host 崩溃不丢已提交事件；孤儿 provider 进程被清理。
 - 同一 thread 不能同时启动两个 provider 会话。
+- 真实数据下，迁移后的聊天页、工具卡片、审批卡片通过视觉回归基线。
 
 ### M2：Codex 与能力模型
 
@@ -1050,6 +1092,7 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 - 启用/停用/卸载；HMR。
 - client boot graph、bundle 服务、slot API、CSS 隔离。
 - 权限展示、插件列表、错误与重试。
+- 侧栏、设置页、消息/工具渲染器全部通过 slot 挂载；插件面板不需要修改 `ui-shell`。
 - 样例第三方 provider、UI、capability 插件。
 - Plugin SDK 文档与脚手架。
 
@@ -1060,6 +1103,7 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 - 不兼容 apiVersion 的插件被拒绝并显示可读错误。
 - 两个插件声明同一贡献时，后加载者失败并显示冲突，不静默覆盖。
 - 插件加载失败不影响 Host 启动。
+- 新增/移除插件面板不改变 shell 的布局与视觉回归基线。
 
 ### M5：多会话、并行与生态
 
@@ -1099,6 +1143,7 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 - **协议契约测试**：contracts 的 schema 与客户端/服务端双向兼容。
 - **插件生命周期测试**：安装、启用、停用、卸载、冲突、崩溃、HMR。
 - **E2E**：Playwright 驱动 Electron，覆盖首次启动、会话、审批、diff、插件安装。
+- **UI 视觉回归**：沿用 pigclaude 的 Playwright 截图基线，覆盖浅/深色、玻璃、窄窗口。
 - **跨平台 CI**：macOS/Windows/Linux 冒烟矩阵。
 - **迁移测试**：旧数据库 + 新代码；旧事件回放。
 - **安全测试**：路径遍历、命令注入、token 泄漏、CSP、插件恶意行为（在受控范围内）。
@@ -1132,6 +1177,9 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 | Provider CLI 版本差异 | 不兼容 | 版本检测 + 最小支持版本 + 明确错误 |
 | 插件冲突 | UI/服务异常 | `provides` + slot id 冲突检测；不允许静默覆盖 |
 | Host 崩溃/孤儿进程 | 资源泄漏 | 健康检查、崩溃重启、pid+启动时间校验、进程组终止 |
+| pigclaude UI 迁移 | 视觉回归、产品耦合 | 先纯展示层迁移；fixture 清零；固定来源 commit；视觉回归 |
+| React 19 插件兼容 | 插件自带 React 导致多实例 | React 作为 shared external；SDK 统一导出；构建校验 |
+| pigclaude 私有产品假设 | 误带账号/代理/会员页面 | 明确不复用清单；删除相关路由；代码审查 |
 
 ---
 
@@ -1166,3 +1214,4 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 | D12 | SQLite 事件日志 + 投影作为事实来源 | 本 spec 提出 |
 | D13 | 产品代码放在 `frontend` monorepo；`backend` 仅云端 | 本 spec 提出 |
 | D14 | 插件通过 `@pigcode/plugin-sdk` 隔离 Cordis | 本 spec 提出 |
+| D15 | UI 外壳与组件以 pigclaude 为迁移基线；账号/会员/代理不迁移 | 已确认 |
