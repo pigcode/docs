@@ -76,6 +76,7 @@ v1.0 的产品边界：
 | 插件信任 | Host 内受信 + UI 受限 facade | 与 dsh 一致，v1 成本可控 |
 | 仓库 | `frontend` 作为产品 monorepo | 单一 lockfile、单一发布单元、协议与客户端同步演进 |
 | UI 基线 | pigclaude 外壳与组件 | 已有高质量桌面 UI，节省视觉与交互成本 |
+| UI 原语 | shadcn 的 Base UI 版本 | 统一组件层，避免 Radix/Base UI 混用 |
 | v1.0 范围 | M0–M5 全部 | 产品负责人明确要求 |
 
 ---
@@ -908,7 +909,7 @@ command_receipts(command_id PRIMARY KEY, result_json, created_at)
 - 从第一天提供 locale 服务与消息目录；v1.0 支持 `zh-CN` 与 `en-US`。
 - 用户消息、agent 输出、文件名不翻译。
 - 主题：浅色/深色/跟随系统；插件通过 theme token 取色，不硬编码颜色。
-- 视觉方向：React 19 + Tailwind 4 + Radix/shadcn 风格的高密度开发工具；具体视觉稿另开设计任务。
+- 视觉方向：React 19 + Tailwind 4 + shadcn 组件（Base UI 原语）的高密度开发工具；具体视觉稿另开设计任务。
 
 ### 11.5 复用 pigclaude UI 基线
 
@@ -916,16 +917,17 @@ Pigcode 的 UI 外壳与组件以 `pigclaude/frontend` 为起点，而不是从�
 
 - pigclaude 聚合仓库：`944f6f9edb5efa5c525d9b884e9aeca72b37ae10`
 - pigclaude frontend：`e9582dd766d550f266dc792efa0961543584d94a`
-- 技术栈：Electron 43 / electron-vite 5 / React 19.2 / Tailwind 4 / Radix / shadcn 风格组件 / TipTap
+- 技术栈：Electron 43 / electron-vite 5 / React 19.2 / Tailwind 4 / shadcn 组件（Base UI 原语）/ TipTap
+- 组件原语目标：shadcn 的 Base UI 版本（Base UI primitives），不使用 Radix。当前 pigclaude checkout 的组件实际引用 `radix-ui` / `@radix-ui/react-*`；迁移到 Pigcode 时做一次性 Radix → Base UI 替换，保持 tokens、CSS 与视觉基线不变。
 - 已有能力：macOS 隐藏标题栏 + 交通灯 + 磨砂、Windows mica + titleBarOverlay、浅/深色与自定义主题、侧栏/设置侧栏、聊天时间线、工具卡片、审批卡片、composer、命令面板、视觉回归基线
 
 复用边界：
 
 | 部分 | 处理 | 说明 |
 |---|---|---|
-| `@pigclaude/web-ui` 组件、tokens、主题 | 直接迁移 | 重命名为 `@pigcode/ui-primitives`，保留 token 与组件 API |
+| `@pigclaude/web-ui` 组件、tokens、主题 | 迁移并替换原语 | 重命名为 `@pigcode/ui-primitives`；Radix → Base UI，保留 token 与对外组件 API |
 | Electron 窗口外壳、交通灯、Windows 标题栏、托盘 | 迁移并适配 | 去掉 `sandbox: false`；原生能力改由 preload + Host RPC 承担 |
-| 侧栏、设置侧栏、聊天页布局、composer、审批/工具卡片 | 迁移并重构 | 去掉 fixture 和硬编码标题；改为 props/store 驱动 |
+| 侧栏、设置侧栏、聊天页布局、composer、审批/工具卡片 | 迁移并重构 | 去掉 fixture 和硬编码标题；改为 props/store 驱动；底层 Radix → Base UI |
 | 主题/外观设置、视觉回归 harness | 直接迁移 | 插件主题 API 映射到同一套 tokens |
 | 登录、会员、OAuth、设备授权 | 不迁移 | Pigcode v1.0 无账号体系 |
 | Claude 账号池、代理、用量、环境页 | 不迁移到核心 | 未来作为 provider/capability 插件实现 |
@@ -936,6 +938,8 @@ Pigcode 的 UI 外壳与组件以 `pigclaude/frontend` 为起点，而不是从�
 
 - 一次性复制到 `pigcode/frontend`，保留来源 commit 与 NOTICE；不在运行时跨仓库依赖 pigclaude。
 - 包名 `@pigclaude/*` → `@pigcode/*`；组件 API 尽量保持，减少视觉回归。
+- 组件原语统一到 shadcn 的 Base UI 版本；不接受同一应用里 Radix 与 Base UI 混用。
+- Base UI 的 Portal/Popup/Trigger 组合与 Radix 不完全一致；逐个组件改写并补交互/可访问性测试，再跑视觉回归。
 - 先迁移纯展示层，再替换数据源；禁止把 fixture 带入生产路径。
 - `Screen` 联合类型与硬编码路由替换为 view registry + slot；核心视图（chat、settings、plugin manager、onboarding）由内置 UI 插件注册。
 - 把所有可见文案迁移到 locale 目录；v1.0 同时提供 zh-CN 与 en-US。
@@ -1016,6 +1020,7 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 - Host：kernel、settings、storage、rpc、projects、threads、sessions。
 - Electron 壳：启动 Host、认证、窗口。
 - 迁移 pigclaude UI 外壳与组件：`ui-primitives`、`ui-shell`、`ui-chat`、`ui-composer`、`ui-settings`；清除 fixture 与 Claude 专属路由。
+- 组件原语从 Radix 替换为 shadcn 的 Base UI 版本，保持 tokens、CSS 与视觉基线。
 - fake provider：用于验证协议与 UI，不依赖真实 CLI。
 - 用 Pigcode store 驱动聊天页与插件列表；核心视图通过 view registry 注册。
 - 一个样例 UI 插件、一个样例 capability 插件。
@@ -1026,6 +1031,7 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 - Host 崩溃后自动重启，Renderer 从 cursor 重连。
 - 创建项目/会话，fake provider 流式输出。
 - 迁移后的 UI 在浅色/深色/玻璃/窄窗口下通过视觉回归基线；没有可见的 Claude 账号/会员/代理入口。
+- 组件层不残留 `@radix-ui/*` 依赖；Dialog/Select/Dropdown/Tooltip/ScrollArea 等交互组件通过 Base UI 行为与可访问性测试。
 - 聊天页、侧栏、设置页由 store/registry 驱动，不再读取 fixture。
 - 安装/启用/停用样例插件；UI slot 和 Host capability 都生效并能干净移除。
 - `pigcode --dump-config` 输出完整配置树。
@@ -1180,6 +1186,7 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 | pigclaude UI 迁移 | 视觉回归、产品耦合 | 先纯展示层迁移；fixture 清零；固定来源 commit；视觉回归 |
 | React 19 插件兼容 | 插件自带 React 导致多实例 | React 作为 shared external；SDK 统一导出；构建校验 |
 | pigclaude 私有产品假设 | 误带账号/代理/会员页面 | 明确不复用清单；删除相关路由；代码审查 |
+| Radix → Base UI 迁移 | 交互行为/可访问性回归 | 逐组件替换；保留视觉基线；补交互测试；锁定 Base UI 版本 |
 
 ---
 
@@ -1215,3 +1222,4 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 | D13 | 产品代码放在 `frontend` monorepo；`backend` 仅云端 | 本 spec 提出 |
 | D14 | 插件通过 `@pigcode/plugin-sdk` 隔离 Cordis | 本 spec 提出 |
 | D15 | UI 外壳与组件以 pigclaude 为迁移基线；账号/会员/代理不迁移 | 已确认 |
+| D16 | UI 组件原语使用 shadcn 的 Base UI 版本，不使用 Radix | 已确认 |
