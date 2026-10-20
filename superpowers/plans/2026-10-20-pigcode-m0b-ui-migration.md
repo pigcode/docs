@@ -124,17 +124,12 @@ Expected: FAIL，缺少 `@testing-library/react` 或 jsdom。
 }
 ```
 
-`frontend/apps/desktop/package.json` 的 `dependencies` 增加：
+`frontend/apps/desktop/package.json` 的 `dependencies` 增加（`@pigcode/ui-shell`、`@pigcode/ui-chat`、`@pigcode/ui-composer`、`@pigcode/ui-settings`、`@pigcode/ui-plugin-manager` 在各自任务创建后再加入，Task 12 统一补全）：
 
 ```json
 {
   "@base-ui/react": "1.9.0",
-  "@pigcode/ui-composer": "workspace:*",
-  "@pigcode/ui-plugin-manager": "workspace:*",
   "@pigcode/ui-primitives": "workspace:*",
-  "@pigcode/ui-settings": "workspace:*",
-  "@pigcode/ui-shell": "workspace:*",
-  "@pigcode/ui-chat": "workspace:*",
   "@tiptap/extension-placeholder": "3.32.0",
   "@tiptap/extension-typography": "3.32.0",
   "@tiptap/react": "3.32.0",
@@ -902,6 +897,32 @@ Run: `cd frontend && pnpm vitest run packages/ui-shell/src/workspace-sidebar.tes
 Expected: FAIL，模块不存在。
 
 - [ ] **Step 3: 迁移 shell 与原生桥**
+
+UI 包统一结构（`ui-shell` 示例；其余 UI 包同样处理）：
+
+```json
+{
+  "name": "@pigcode/ui-shell",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./client": "./src/plugin.ts" },
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "@pigcode/contracts": "workspace:*",
+    "@pigcode/ui-primitives": "workspace:*"
+  },
+  "peerDependencies": { "react": "^19", "react-dom": "^19" },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "typescript": "5.9.3",
+    "vitest": "4.0.16"
+  }
+}
+```
+
+`ui-chat`/`ui-composer`/`ui-settings`/`ui-plugin-manager` 的 package.json 按同一形状创建；需要 `@pigcode/client-runtime` 的包在 dependencies 里加上 workspace 依赖。
 
 从 pigclaude 复制并适配：
 
@@ -1888,6 +1909,7 @@ git commit -m "feat(host): expose plugin management over rpc"
 ### Task 12: React Renderer, Core UI Plugins, E2E, and Visual Regression
 
 **Files:**
+- Modify: `frontend/apps/desktop/package.json`
 - Modify: `frontend/apps/desktop/src/renderer/index.html`
 - Create: `frontend/apps/desktop/src/renderer/src/main.tsx`
 - Create: `frontend/apps/desktop/src/renderer/src/app.tsx`
@@ -1943,6 +1965,8 @@ Run: `cd frontend/apps/desktop && PIGCODE_E2E=1 pnpm exec playwright test e2e/m0
 Expected: FAIL，React renderer 尚未接线。
 
 - [ ] **Step 3: 组装 React 应用**
+
+先把 `@pigcode/ui-shell`、`@pigcode/ui-chat`、`@pigcode/ui-composer`、`@pigcode/ui-settings`、`@pigcode/ui-plugin-manager` 加入 `apps/desktop/package.json` 的 dependencies，并运行 `pnpm --dir frontend install`。
 
 `main.tsx`：
 
