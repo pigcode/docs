@@ -25,7 +25,7 @@ v1.0 的产品边界：
 
 - 使用开源 [Cordis](https://github.com/cordiverse/cordis) 作为插件容器，不重新实现插件框架。
 - UI 外壳与组件以 pigclaude 为迁移基线；账号、会员、代理等 pigclaude 专属页面不迁移。
-- TypeScript 全家桶：Electron 壳 + Local Host（Node 进程）+ 共享 React 客户端。
+- TypeScript 全家桶：Electron 壳 + Host Runtime（Electron utilityProcess）+ 共享 React 客户端。
 - Host 与 Renderer 各自运行一棵 Cordis 插件树，通过版本化 RPC 通信。
 - SQLite 保存只追加事件日志与投影；Git 隐藏 ref 保存 checkpoint。
 - 插件信任模型与 deepseek-harness 一致：Host 侧插件在进程内受信运行，UI 插件在 Renderer 内通过受限 facade 运行。
@@ -70,7 +70,7 @@ v1.0 的产品边界：
 | 产品形态 | 第三方 CLI 控制面 | 复用用户已有订阅与认证，聚焦体验与扩展性 |
 | v1 provider | Claude Code、Codex | 覆盖最大用户群，协议能力最丰富 |
 | 插件容器 | Cordis（固定版本 + vendor） | 上游开源、经过 dsh 验证，不重复造轮子 |
-| Host 形态 | 独立 Node 进程 | 崩溃隔离、可重启、可独立测试、为远程预留 |
+| Host 形态 | Electron utilityProcess + MessagePort | 无独立 daemon/端口/token；保留崩溃隔离、可重启与远程路径 |
 | Client 形态 | Electron + 共享 React 客户端 | 三平台桌面能力与成熟生态 |
 | 数据模型 | SQLite 事件日志 + 投影 | 回放、重连、审计、多端一致 |
 | 插件信任 | Host 内受信 + UI 受限 facade | 与 dsh 一致，v1 成本可控 |
@@ -148,9 +148,9 @@ pigclaude 的 UI 外壳与组件作为迁移基线；其账号、会员、代理
 │  Cordis client plugin tree                          │
 │  第三方 UI 插件                                     │
 └───────────────┬────────────────────────────────────┘
-                │ 版本化 RPC：commands / events / snapshot+cursor
+                │ MessagePort RPC：commands / events / snapshot+cursor
 ┌───────────────▼────────────────────────────────────┐
-│ Local Host（Node 进程）                             │
+│ Host Runtime（Electron utilityProcess）             │
 │  Cordis host plugin tree                            │
 │  workspace / projects / threads / sessions          │
 │  providers / terminal / git / checkpoints           │
@@ -174,32 +174,35 @@ Electron main
   ├─ 窗口 / 托盘 / 菜单 / 快捷键
   ├─ 自动更新 / 代码签名验证
   ├─ 原生目录选择 / 打开外部链接
-  └─ 监督 Local Host
-       ├─ 启动、健康检查、崩溃重启
-       ├─ 传递 loopback 地址 + 每次启动的认证 token
-       └─ 退出时先优雅停止运行中的任务
+  ├─ 插件 bundle 的自定义 protocol
+  └─ 监督 Host utilityProcess
+       ├─ 启动、崩溃重启、退出时优雅停止
+       └─ MessageChannelMain 端口分配
 
-Local Host（独立 Node 进程）
+Host Runtime（Electron utilityProcess）
   ├─ Cordis root context
   ├─ SQLite（事件日志 + 投影 + 回执）
   ├─ Provider 子进程（claude / codex）
   ├─ PTY 子进程
   ├─ Git 操作
-  └─ 认证的 WebSocket / HTTP 服务（仅 127.0.0.1）
+  └─ MessagePort RPC（无 HTTP、无端口、无 token）
 
 Electron renderer
   ├─ 沙箱化，无 Node 集成
-  ├─ preload 暴露最小原生 bridge
-  └─ 通过 RPC 访问 Host
+  ├─ preload 暴露最小原生 bridge + MessagePort 转交
+  └─ 通过 MessagePort 访问 Host
 ```
 
-### 4.3 为什么 Host 独立
+### 4.3 为什么 Host 放在 utilityProcess，而不是 Electron main
 
-- **崩溃隔离**：provider 协议解析或插件崩溃不应带走整个窗口。
-- **可重启**：Host 崩溃后 Electron main 可以重启它，Renderer 从 cursor 重连。
+- **崩溃隔离**：provider 协议解析或第三方 Host 插件崩溃时，只重启 utilityProcess，窗口和已渲染的 UI 不受影响。
+- **可重启**：main 监听 utilityProcess 的 exit，重新创建进程和 MessageChannel；Renderer 从 cursor 重连。
 - **进程所有权**：Host 是 CLI/PTY 子进程的父进程，退出时能清理进程组，避免孤儿进程。
-- **未来远程**：远程客户端连接的是同一个 Host 协议，不需要重写业务层。
-- **可测试**：Host 可以脱离 Electron 启动，用 CLI 和集成测试驱动。
+- **主进程不被阻塞**：SQLite、PTY、Git、插件代码不占用 Electron main 的事件循环；窗口/菜单/更新保持响应。
+- **启动与打包**：utilityProcess 复用 Electron 自带的 Node，不需要第二个 Node 运行时；没有 HTTP server、端口分配、token 握手和 CORS，Host 与窗口可以并行启动。
+- **未来远程**：Host 的核心只依赖一个 transport 接口；v1.0 用 MessagePort，未来远程再加 WebSocket transport，不重写领域层。
+
+不把 Host 放进 Electron main 的代价是：插件崩溃会带走整个应用、同步 SQLite 可能卡住窗口事件、未来远程需要把业务层整体抽走。把 Host 放进 utilityProcess 已经去掉独立 daemon 的启动和打包开销，同时保留隔离。
 
 ### 4.4 Cordis 的使用方式
 
@@ -217,14 +220,14 @@ Pigcode 直接使用 Cordis 及其官方插件：
 
 1. **固定版本并 vendor**：Cordis 当前是 `4.0.0-rc.11`，上游明确声明 API 不稳定。Pigcode 在 `vendor/` 下固定版本，升级走独立 PR 与兼容测试，不跟随上游自动升级。
 2. **第三方插件不直接依赖 Cordis 类型**：通过 `@pigcode/plugin-sdk` 暴露稳定的 `ctx`、`inject`、`effect` 和事件 API。SDK 是薄封装，不是另一个插件框架。
-3. **核心也尽量插件化**：只有 kernel（创建 Cordis 应用、加载 profile、日志、信号处理）是固定的；settings、storage、rpc、workspace、threads、providers、UI shell 都以 bundle/plugin 形式挂载。
+3. **核心也尽量插件化**：只有 kernel（创建 Cordis 应用、加载 profile、日志、信号处理）是固定的；settings、storage、rpc、workspace、threads、providers、UI shell 都以 composition package / plugin 形式挂载。
 
 ### 4.5 组合模型：profile → bundle → patch
 
 沿用 dsh 的组装方式：
 
 - **profile**：一套具名组装，位于 `$PIGCODE_HOME/profiles/<name>/`。v1.0 默认 `desktop` profile。
-- **bundle**：一个 npm 包，`package.json` 的 `pigcode.bundle` 指向 patch 文件，声明它挂载的插件条目。
+- **bundle（composition package）**：bundle 本身就是一个普通 npm 包，直接用包名发布，不加 `bundle-` 前缀；`package.json` 的 `pigcode.bundle` 指向 patch 文件，声明它挂载的插件条目。
 - **patch**：按 `id` 定位条目，替换整个 config、插入新条目，或设置 `disabled`。
 - **叠加顺序**：profile 中的 bundle 按顺序 → profile patch → home patch → 启动参数 overlay。
 - **HMR**：开发期可启用；生产默认关闭，改动在下次启动生效。
@@ -234,12 +237,13 @@ Pigcode 直接使用 Cordis 及其官方插件：
 
 | Bundle | 内容 |
 |---|---|
-| `@pigcode/bundle-base` | settings、storage、rpc、plugin-manager、logging |
-| `@pigcode/bundle-workspace` | workspace、projects、threads、sessions、git、checkpoints |
-| `@pigcode/bundle-providers` | provider-claude、provider-codex |
-| `@pigcode/bundle-terminal` | PTY 终端 |
-| `@pigcode/bundle-ui` | client modules、slots、renderer、shell、chat、diff、terminal、settings、plugin-manager |
-| `@pigcode/bundle-desktop` | desktop host 启动、认证、Electron 集成 |
+| `@pigcode/base` | settings、storage、rpc、plugin-manager、logging |
+| `@pigcode/workspace` | workspace、projects、threads、sessions、git、checkpoints |
+| `@pigcode/providers` | provider-claude、provider-codex |
+| `@pigcode/terminal` | PTY 终端 |
+| `@pigcode/ui` | client modules、slots、renderer、shell、chat、diff、terminal、settings、plugin-manager |
+
+`apps/desktop` 的 `package.json` 声明 `pigcode.profile`，直接引用这些 composition package；不再单独发布 `bundle-desktop`。
 
 ---
 
@@ -470,7 +474,7 @@ session.stopped
 | `provider` | Host | 实现 `ProviderDriver`，声明能力，可附带设置 UI | Claude Code、Codex |
 | `capability` | Host | 注册 Cordis 服务、命令、策略、MCP 工具 | checkpoint、PTY、MCP bridge、GitHub 集成 |
 | `ui` | Renderer（可选 Host 半） | 注册 slot、面板、设置页、命令、消息渲染器 | 时间线增强、右栏面板、主题 |
-| `bundle` | Host | 发行组合，不是用户插件 | `bundle-base`、`bundle-desktop` |
+| `bundle`（composition package） | Host | 普通 npm 包，声明 profile 组合，不是用户插件 | `@pigcode/base`、`@pigcode/ui` |
 
 ### 7.2 Manifest
 
@@ -547,18 +551,20 @@ session.stopped
 - `@cordisjs/plugin-loader` 读取 profile 配置。
 - 每个条目按 `inject` 等待依赖服务就绪后挂载。
 - 插件注册一律通过 `ctx.effect()` 或 `ctx.on()`，确保 reload/teardown 可逆。
-- 第三方插件加载失败不能阻止 Host 启动；失败条目进入插件列表的 error 状态，并提供重试。核心 bundle 加载失败是致命错误，Host 不会进入可用状态。
+- 第三方插件加载失败不能阻止 Host 启动；失败条目进入插件列表的 error 状态，并提供重试。核心 composition package 加载失败是致命错误，Host 不会进入可用状态。
 - `pigcode --dump-config` 输出最终配置树，便于定位和覆盖。
 
 ### 7.5 Client 加载
 
 - Host 扫描已启用且带 `client` 入口的插件，构建 **boot graph**：
-  - 节点：插件 id、revision、bundle URL、client 依赖。
+  - 节点：插件 id、revision、client 依赖。
   - 边：`inject` 声明的客户端服务依赖。
-- Host 通过认证端点提供：
-  - `GET /plugins/boot.json`
-  - `GET /plugins/<id>/<revision>/client.js`
-  - `GET /plugins/<id>/<revision>/style.css`（可选）
+- Host 通过控制通道把 boot graph 与插件文件映射交给 Electron main；main 注册 `pigcode-plugin://` protocol，提供：
+  - `pigcode-plugin://boot.json`
+  - `pigcode-plugin://<id>/<revision>/client.js`
+  - `pigcode-plugin://<id>/<revision>/style.css`（可选）
+- 插件启停或 revision 变化时，Host 推送新的映射；main 更新 protocol 处理器，Renderer 按 revision 重新加载。
+- `pigcode-plugin://` 在 app ready 前注册为 privileged scheme（standard、secure、supportFetchAPI），以便 ESM import 与 CSP 正常工作。
 - Renderer 的 `client-modules` 服务：
   - 先加载客户端 kernel（connection、store、slots、renderer）。
   - 按 boot graph 顺序惰性 `import()` 每个 client entry。
@@ -641,13 +647,16 @@ interface PigcodeClientApi {
 
 ## 8. 协议
 
-### 8.1 传输与认证
+### 8.1 传输与信任边界
 
-- Host 仅绑定 `127.0.0.1`，使用系统分配的随机端口。
-- 每次启动生成随机 bearer token；Electron main 通过受保护的 IPC 把 `endpoint + token` 交给 preload 的连接初始化逻辑。token 只存在于 Renderer 连接模块的闭包中，不写入 localStorage 或磁盘。Renderer 不接收任何 provider 凭据；Host 会话 token 只用于 loopback RPC。
-- WebSocket 用于 RPC 与订阅；HTTP 用于文件上传/下载、插件 bundle、健康检查。
-- WebSocket 升级时校验 token 与 `Origin`；HTTP 同样校验。
-- v1.0 不接受非 loopback 连接。
+- v1.0 的本地传输是 Electron `MessagePort`，使用两条 `MessageChannelMain`：
+  - 控制通道：main ↔ Host，用于生命周期、boot graph、插件文件映射和状态。
+  - 应用通道：Renderer ↔ Host，用于命令、事件和订阅。
+- 没有 HTTP server、端口分配、bearer token 或 CORS。
+- RPC 消息使用结构化克隆；普通消息为 JSON 信封，大文件/附件通过 MessagePort 分块传输。
+- 协议本身与传输解耦：`HostTransport` 接口在 v1.0 只有 MessagePort 实现；未来的远程 transport 增加 WebSocket 实现，领域层、命令和事件不变。
+- 插件 client bundle 由 Electron main 通过自定义 protocol `pigcode-plugin://` 从 profile 目录提供；Renderer 直接 `import()`，不经过 HTTP。
+- 信任边界：MessagePort 只交给受信 Renderer；Renderer 不接收 provider 凭据。UI 插件在 v1.0 受信（见 7.7）。
 
 ### 8.2 命令
 
@@ -808,13 +817,13 @@ command_receipts(command_id PRIMARY KEY, result_json, created_at)
 
 - **main**：窗口、托盘、菜单、快捷键、更新、原生对话框、Host 监督、单实例锁。
 - **preload**：只暴露最小 bridge：
-  - `getHostEndpoint()`
-  - `getHostToken()`
+  - `onHostPort(listener)`：接收 main 转交的 MessagePort
   - `pickDirectory()`
   - `openExternal(url)`
   - `showItemInFolder(path)`
   - `getAppInfo()`
   - `onHostStatus(listener)`
+  - `onHostRestarted(listener)`
 - **renderer**：加载 `pigcode://app/` 的打包资源，沙箱化，无 Node 集成。
 - 原生模块（如 PTY）只在 Host 进程中加载，不进入 Electron main 的启动路径。
 
@@ -823,26 +832,32 @@ command_receipts(command_id PRIMARY KEY, result_json, created_at)
 启动：
 
 1. main 获取单实例锁。
-2. 启动 Host 子进程，传入 `PIGCODE_HOME`、日志路径；随机 token 通过 stdin 或 0600 权限的临时文件传递，不放在 argv 中。
-3. 等待 Host 健康检查（有超时）。
-4. 创建窗口，加载 renderer；preload 注入 endpoint/token。
-5. Renderer 连接 Host，获取 snapshot，渲染 UI。
+2. main 创建两条 `MessageChannelMain`（控制通道 main↔Host、应用通道 Renderer↔Host），启动 Host utilityProcess 并把 Host 侧端口交给它；同时创建窗口并加载 renderer，两者并行。
+3. main 通过 `webContents.postMessage(channel, null, [port])` 把应用通道的 Renderer 侧端口交给 preload；preload 用 `window.postMessage(..., [port])` 转交给主世界的 client-runtime。
+4. Host 发送 `ready`（协议版本、capabilities）；Renderer 订阅 snapshot，渲染 UI。
+5. 首屏只激活 kernel、settings、storage、rpc、plugin-manager 与 UI shell；provider 检测、终端、git 等在首屏后按需激活。
+
+启动优化：
+
+- Host 入口预先 bundle 成少量文件，避免启动时解析大量模块。
+- SQLite 打开与迁移在首屏之后或与首屏并行执行；首屏不等待 provider 检测。
+- 非关键 Host 插件惰性激活；插件列表与设置页可以后加载。
 
 关闭：
 
 - 关闭窗口默认隐藏（macOS/Windows 托盘），Host 与任务继续运行。
 - 退出应用前查询 Host 是否有运行中的 run、待审批、后台任务、定时任务。
 - 有任务时弹出确认；确认后先请求 Host 优雅停止，再退出。
-- Host 退出时终止所有 provider/PTY 进程组；超时强制 kill。
+- utilityProcess 退出时 main 负责重启（应用退出流程除外）；Host 退出时终止所有 provider/PTY 进程组，超时强制 kill。
 
 ### 10.3 安全
 
 - `contextIsolation: true`、`sandbox: true`、`nodeIntegration: false`。
-- 自定义 scheme 只提供打包资源；禁止任意路径。
-- CSP：`default-src 'self'`；连接只允许 Host 的 loopback origin；禁止内联脚本（开发模式例外）。
-- 插件 bundle 由 Host 提供；CSP 在响应头中按当前 loopback origin 生成，允许 `script-src` 该 origin；Host 的 CORS 允许 `pigcode://app` 来源。
-- Renderer 不读取 provider 凭据、不读取任意文件；所有文件访问走 Host 的路径校验。
-- Host 会话 token 只授予 loopback RPC。UI 插件在 v1.0 受信，能够通过连接模块调用 Host；未来的 out-of-process plugin host 会把这一能力收窄为 capability-scoped bridge。
+- 自定义 scheme `pigcode://` 只提供打包资源；`pigcode-plugin://` 只提供 profile 目录内的插件 bundle，路径经过规范化与根目录校验。
+- CSP：`default-src 'self'`；`script-src 'self' pigcode-plugin:`；禁止内联脚本（开发模式例外）。MessagePort 不受 CSP 约束。
+- Renderer 不读取 provider 凭据、不读取任意文件；所有文件访问走 Host 的路径校验与 MessagePort RPC。
+- MessagePort 只转交给应用主窗口的受信 frame；不使用 localhost 端口、bearer token 或 CORS。
+- UI 插件在 v1.0 受信，能够通过连接模块调用 Host；未来的 out-of-process plugin host 会把这一能力收窄为 capability-scoped bridge。
 - Host 的路径校验：规范化、解析 symlink、检查是否位于项目根目录或允许的工作区。
 - Provider 子进程不通过 shell 启动；环境变量中的敏感值不写入日志。
 
@@ -958,7 +973,7 @@ Pigcode 的 UI 外壳与组件以 `pigclaude/frontend` 为起点，而不是从�
 |---|---|---|
 | `pigcode/pigcode` | 聚合仓库：submodule 指针、ADR 索引、发布清单、脚本 | 使用 |
 | `pigcode/docs` | 架构、协议、插件作者指南、ADR、用户文档、设计 spec | 使用 |
-| `pigcode/frontend` | 产品 monorepo：desktop、host、contracts、plugin-sdk、client-runtime、ui、providers、bundles | 使用 |
+| `pigcode/frontend` | 产品 monorepo：desktop、host、contracts、plugin-sdk、client-runtime、ui、providers、compositions | 使用 |
 | `pigcode/backend` | 云端：身份、设备、relay、同步、计费 | 不使用，预留 |
 
 ### 12.2 产品 monorepo 结构
@@ -966,8 +981,8 @@ Pigcode 的 UI 外壳与组件以 `pigclaude/frontend` 为起点，而不是从�
 ```text
 frontend/
   apps/
-    desktop/                 # Electron main / preload / renderer
-    host/                    # Local Host daemon + CLI
+    desktop/                 # Electron main / preload / renderer；声明 pigcode.profile
+    host/                    # Host Runtime（Electron utilityProcess entry）
   packages/
     contracts/               # Zod 协议、领域类型、版本
     plugin-sdk/              # Host/Client 插件 API、manifest 类型
@@ -982,12 +997,12 @@ frontend/
     ui-plugin-manager/       # 插件列表与安装
     provider-claude/         # Claude Code adapter
     provider-codex/          # Codex adapter
-    bundle-base/
-    bundle-workspace/
-    bundle-providers/
-    bundle-terminal/
-    bundle-ui/
-    bundle-desktop/
+    compositions/
+      base/                  # @pigcode/base
+      workspace/             # @pigcode/workspace
+      providers/             # @pigcode/providers
+      terminal/              # @pigcode/terminal
+      ui/                    # @pigcode/ui
   vendor/
     cordis/                  # 固定版本 + 必要 patch
   scripts/                   # 构建、打包、签名、发布
@@ -998,9 +1013,10 @@ frontend/
 - pnpm workspace + Turborepo。
 - TypeScript strict；共享 tsconfig。
 - 构建：`tsdown`/`esbuild` 产出 ESM；Electron main/preload 单独 bundle。
-- Host 以独立 entry 打包，随 Desktop 发布；版本与 Desktop 一致。
+- Host 以 utilityProcess entry 打包，随 Desktop 发布；复用 Electron 自带的 Node，不额外分发 Node 运行时；版本与 Desktop 一致。
+- `better-sqlite3`、`node-pty` 等原生模块使用 `asarUnpack`，Host 入口路径在打包配置中固定。
 - 插件独立版本；通过 `apiVersion` 与 Host 兼容。
-- 发布单元：Desktop（含 Host）+ 内置 bundles；第三方插件独立发布。
+- 发布单元：Desktop（含 Host）+ 内置 composition packages；第三方插件独立发布。
 
 ### 12.4 为什么 Host 放在 `frontend`
 
@@ -1018,7 +1034,7 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 
 - monorepo、Cordis vendor/pin、contracts、plugin-sdk 骨架。
 - Host：kernel、settings、storage、rpc、projects、threads、sessions。
-- Electron 壳：启动 Host、认证、窗口。
+- Electron 壳：启动 Host utilityProcess、MessageChannel、窗口；Host 与窗口并行启动。
 - 迁移 pigclaude UI 外壳与组件：`ui-primitives`、`ui-shell`、`ui-chat`、`ui-composer`、`ui-settings`；清除 fixture 与 Claude 专属路由。
 - 组件原语从 Radix 替换为 shadcn 的 Base UI 版本，保持 tokens、CSS 与视觉基线。
 - fake provider：用于验证协议与 UI，不依赖真实 CLI。
@@ -1028,7 +1044,8 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 验收：
 
 - 应用在三平台开发环境启动。
-- Host 崩溃后自动重启，Renderer 从 cursor 重连。
+- Host 崩溃后自动重启；窗口不重载，Renderer 通过新的 MessagePort 从 cursor 重连。
+- 冷启动首屏不等待 provider 检测；Host 与窗口并行启动。
 - 创建项目/会话，fake provider 流式输出。
 - 迁移后的 UI 在浅色/深色/玻璃/窄窗口下通过视觉回归基线；没有可见的 Claude 账号/会员/代理入口。
 - 组件层不残留 `@radix-ui/*` 依赖；Dialog/Select/Dropdown/Tooltip/ScrollArea 等交互组件通过 Base UI 行为与可访问性测试。
@@ -1145,20 +1162,21 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 
 - **单元测试**：adapter 的规范化逻辑、capability 决策、路径校验、事件投影。
 - **回放测试**：录制 Claude Code/Codex 的原生协议帧，作为 adapter 的 replay fixture；不 mock 协议细节。
-- **集成测试**：Host 脱离 Electron 启动，使用 fake provider 跑完整命令/事件/投影链路。
+- **集成测试**：Host 核心以内存 transport 启动，使用 fake provider 跑完整命令/事件/投影链路；不依赖 Electron 窗口。
 - **协议契约测试**：contracts 的 schema 与客户端/服务端双向兼容。
 - **插件生命周期测试**：安装、启用、停用、卸载、冲突、崩溃、HMR。
 - **E2E**：Playwright 驱动 Electron，覆盖首次启动、会话、审批、diff、插件安装。
 - **UI 视觉回归**：沿用 pigclaude 的 Playwright 截图基线，覆盖浅/深色、玻璃、窄窗口。
 - **跨平台 CI**：macOS/Windows/Linux 冒烟矩阵。
 - **迁移测试**：旧数据库 + 新代码；旧事件回放。
-- **安全测试**：路径遍历、命令注入、token 泄漏、CSP、插件恶意行为（在受控范围内）。
+- **安全测试**：路径遍历、命令注入、MessagePort 越权、自定义 protocol 路径越界、CSP、插件恶意行为（在受控范围内）。
 
 ---
 
 ## 15. 安全与隐私
 
-- Host 只监听 loopback；每次启动随机 token；Renderer 不持久化 Host 会话 token，且不接收 provider 凭据。UI 插件在 v1.0 受信，能够通过连接模块调用 Host；安装 Host 插件等同于运行受信第三方代码。
+- v1.0 无本地网络监听；Renderer 通过 MessagePort 访问 Host。MessagePort 只交给应用主窗口；Renderer 不接收 provider 凭据。UI 插件在 v1.0 受信，能够通过连接模块调用 Host；安装 Host 插件等同于运行受信第三方代码。
+- 插件 client bundle 通过 `pigcode-plugin://` 从 profile 目录读取，路径经过规范化与根目录校验。
 - Provider 凭据由 CLI 自己管理；Pigcode 不读取、不存储、不转发 provider token。
 - Renderer 不直接访问文件系统；所有路径经 Host 校验。
 - 插件安装显示权限和风险；Host 插件视为受信代码。
@@ -1178,11 +1196,12 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 | Provider 协议漂移 | adapter 失效 | replay fixture + 版本检测 + capability 降级 |
 | 三平台 PTY/进程差异 | 终端/清理问题 | `node-pty` + ConPTY + 进程组 + 三平台 CI |
 | M0–M5 全进 v1.0 | 发布周期长、范围蔓延 | 明确里程碑验收；M0–M2 关键路径优先；不做市场/远程/账号 |
-| Electron 安全配置错误 | 凭据泄漏/远程代码执行 | contextIsolation、sandbox、CSP、loopback、token、代码审查 |
+| Electron 安全配置错误 | 凭据泄漏/远程代码执行 | contextIsolation、sandbox、CSP、MessagePort、自定义 protocol、代码审查 |
 | 事件日志膨胀 | 磁盘/性能 | 分页、归档、压缩、保留策略、投影索引 |
 | Provider CLI 版本差异 | 不兼容 | 版本检测 + 最小支持版本 + 明确错误 |
 | 插件冲突 | UI/服务异常 | `provides` + slot id 冲突检测；不允许静默覆盖 |
-| Host 崩溃/孤儿进程 | 资源泄漏 | 健康检查、崩溃重启、pid+启动时间校验、进程组终止 |
+| Host utilityProcess 崩溃/孤儿进程 | 资源泄漏、会话中断 | main 重启 utilityProcess；Renderer 从 cursor 重连；pid+启动时间校验；进程组终止 |
+| utilityProcess 启动/打包失败 | Host 不可用 | 启动超时与错误界面；打包路径校验；原生模块 asarUnpack；三平台冒烟 |
 | pigclaude UI 迁移 | 视觉回归、产品耦合 | 先纯展示层迁移；fixture 清零；固定来源 commit；视觉回归 |
 | React 19 插件兼容 | 插件自带 React 导致多实例 | React 作为 shared external；SDK 统一导出；构建校验 |
 | pigclaude 私有产品假设 | 误带账号/代理/会员页面 | 明确不复用清单；删除相关路由；代码审查 |
@@ -1217,9 +1236,10 @@ v1.0 的发布门槛是 M0–M5 全部完成。M0–M2 是技术风险最高的�
 | D8 | v1 支持 macOS、Windows、Linux | 已确认 |
 | D9 | 使用 Cordis，不重新实现插件框架 | 已确认 |
 | D10 | v1.0 发布门槛为 M0–M5 全部完成 | 已确认 |
-| D11 | Host 作为独立 Node 进程，Renderer 通过 RPC 访问 | 本 spec 提出 |
+| D11 | Host 运行在 Electron utilityProcess，Renderer 通过 MessagePort RPC 访问；不使用独立 daemon/localhost 服务 | 已确认（按评审调整） |
 | D12 | SQLite 事件日志 + 投影作为事实来源 | 本 spec 提出 |
 | D13 | 产品代码放在 `frontend` monorepo；`backend` 仅云端 | 本 spec 提出 |
 | D14 | 插件通过 `@pigcode/plugin-sdk` 隔离 Cordis | 本 spec 提出 |
 | D15 | UI 外壳与组件以 pigclaude 为迁移基线；账号/会员/代理不迁移 | 已确认 |
 | D16 | UI 组件原语使用 shadcn 的 Base UI 版本，不使用 Radix | 已确认 |
+| D17 | bundle/composition package 使用普通包名，不加 `bundle-` 前缀 | 已确认 |
