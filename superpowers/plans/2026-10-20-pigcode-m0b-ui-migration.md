@@ -910,6 +910,7 @@ UI 包统一结构（`ui-shell` 示例；其余 UI 包同样处理）：
   "scripts": { "typecheck": "tsc --noEmit" },
   "dependencies": {
     "@pigcode/contracts": "workspace:*",
+    "@pigcode/plugin-sdk": "workspace:*",
     "@pigcode/ui-primitives": "workspace:*"
   },
   "peerDependencies": { "react": "^19", "react-dom": "^19" },
@@ -1473,6 +1474,72 @@ export async function loadClientPlugins(options: LoadClientPluginsOptions): Prom
     },
   }
 }
+```
+
+`frontend/packages/plugin-sdk/src/client.ts` 扩展为结构化 facade（不 import client-runtime，避免循环依赖）：
+
+```ts
+/** 浏览器侧插件可见的最小能力；核心给更多能力时通过可选字段扩展。 */
+export interface ClientPanel {
+  id: string
+  title: string
+  render(container: HTMLElement): void
+}
+
+export interface ClientSlotEntry {
+  id: string
+  order?: number
+  render: () => unknown
+}
+
+export interface ClientSlotApi {
+  register(name: string, entry: ClientSlotEntry): () => void
+}
+
+export interface ClientPluginContext {
+  slots: ClientSlotApi
+  host: { call(method: string, params: unknown): Promise<unknown> }
+  /** 兼容 M0-A 的 DOM 面板式示例插件。 */
+  registerPanel(panel: ClientPanel): () => void
+}
+
+export type ClientPlugin = (ctx: ClientPluginContext) => void | (() => void)
+
+export function defineClientPlugin(plugin: ClientPlugin): ClientPlugin {
+  return plugin
+}
+```
+
+`ui-shell` 提供一个 `PluginPanelHost`（放在 `ui-shell/src/plugin-panel.tsx`），把 DOM 面板挂到 React 树里：
+
+```tsx
+/** 把 registerPanel 的 DOM 渲染函数挂到 React 生命周期。 */
+import { useEffect, useRef } from "react"
+import type { ClientPanel } from "@pigcode/plugin-sdk"
+
+export function PluginPanelHost({ panel }: { panel: ClientPanel }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!ref.current) return
+    panel.render(ref.current)
+  }, [panel])
+  return <div ref={ref} data-plugin-panel={panel.id} />
+}
+```
+
+Task 12 的 client context 同时提供 `slots` 与 `registerPanel`：
+
+```ts
+context: () => ({
+  slots: registry,
+  host: { call: (method, params) => connection.call(method, params) },
+  registerPanel(panel) {
+    return registry.register("sidebar.section", {
+      id: panel.id,
+      render: () => <PluginPanelHost panel={panel} />,
+    })
+  },
+})
 ```
 
 - [ ] **Step 4: 运行测试**
