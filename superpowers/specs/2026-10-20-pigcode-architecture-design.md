@@ -951,7 +951,7 @@ Pigcode 的 UI 外壳与组件以 `pigclaude/frontend` 为起点，而不是从�
 
 迁移方式：
 
-- 一次性复制到 `pigcode/frontend`，保留来源 commit 与 NOTICE；不在运行时跨仓库依赖 pigclaude。
+- 一次性复制到 `pigcode/pigcode`，保留来源 commit 与 NOTICE；不在运行时跨仓库依赖 pigclaude。
 - 包名 `@pigclaude/*` → `@pigcode/*`；组件 API 尽量保持，减少视觉回归。
 - 组件原语统一到 shadcn 的 Base UI 版本；不接受同一应用里 Radix 与 Base UI 混用。
 - Base UI 的 Portal/Popup/Trigger 组合与 Radix 不完全一致；逐个组件改写并补交互/可访问性测试，再跑视觉回归。
@@ -971,9 +971,9 @@ Pigcode 的 UI 外壳与组件以 `pigclaude/frontend` 为起点，而不是从�
 
 | 仓库 | 职责 | v1.0 |
 |---|---|---|
-| `pigcode/pigcode` | 聚合仓库：submodule 指针、ADR 索引、发布清单、脚本 | 使用 |
+| `pigcode/monorepo` | 聚合仓库：submodule 指针、ADR 索引、发布清单、脚本 | 使用 |
 | `pigcode/docs` | 架构、协议、插件作者指南、ADR、用户文档、设计 spec | 使用 |
-| `pigcode/frontend` | 产品 monorepo：desktop、host、contracts、plugin-sdk、client-runtime、ui、providers、compositions | 使用 |
+| `pigcode/pigcode` | 产品 monorepo：desktop、host、contracts、plugin-sdk、client-runtime、ui、providers、compositions | 使用 |
 | `pigcode/backend` | 云端：身份、设备、relay、同步、计费 | 不使用，预留 |
 
 ### 12.2 产品 monorepo 结构
